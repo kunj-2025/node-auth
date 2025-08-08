@@ -6,7 +6,11 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc",
-    "prepare": "npm run build"
+    "dev": "tsc --watch",
+    "clean": "rm -rf dist",
+    "prepare": "npm run clean && npm run build",
+    "lint": "echo 'Linting not configured'",
+    "test": "echo 'Tests not configured'"
   },
   "keywords": ["auth", "sso", "webauthn", "otp", "2fa", "nodejs", "express"],
   "author": "Your Name",

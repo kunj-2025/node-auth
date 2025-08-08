@@ -1,4 +1,3 @@
-
 export {
   initialize,
   getConfig,
@@ -8,30 +7,17 @@ export {
   type AuthServiceInstances,
 } from './config';
 
-export { createAuthRoutes } from './auth.routes';
-export { AuthController } from './auth.controller';
-export { AuthService } from './auth.service';
-export { authValidation } from './auth.validation';
+export { createAuthRoutes } from './routes';
+export { AuthController } from './controllers';
+export { AuthService, WebAuthnService, MicrosoftSsoService, EmailService } from './services';
+export { authValidation } from './validation';
 export { getAuthSwaggerRouter } from './swagger';
-
-// Service exports
-export {
-  WebAuthnService,
-  type WebAuthnConfig,
-} from './webauthn.service';
-
-export {
-  MicrosoftSsoService,
-  type MicrosoftSsoConfig,
-} from './microsoft.sso.service';
-
-export {
-  EmailService,
-  type EmailServiceConfig,
-} from './email.service';
 
 // Type exports
 export { type RequestWithUser } from './types';
+
+// Utility exports
+export * from './utils';
 
 // Re-export commonly used types from dependencies
 export type {
