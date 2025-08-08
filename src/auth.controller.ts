@@ -1,8 +1,9 @@
-import {  Response } from 'express';
+
+import { Response } from 'express';
 import jwt from 'jsonwebtoken';
 import { AuthService } from './auth.service';
 import { getConfig, getServiceInstances } from './config';
-import { RequestWithUser } from './types';
+import { RequestWithUser, WebAuthnChallenge } from './types';
 
 declare module 'express-session' {
   interface SessionData {
@@ -13,8 +14,6 @@ declare module 'express-session' {
     // Microsoft
     microsoftTokens?: {
       accessToken: string;
-      // refreshToken: string;
-      // expiresAt: number;
     };
     
     // Twitter
@@ -39,6 +38,7 @@ declare module 'express-session' {
   }
 }
 
+// Constants
 const CHALLENGE_JWT_EXPIRES_IN = '5m';
 
 class AuthController {
@@ -48,51 +48,76 @@ class AuthController {
   constructor() {
     this.authService = new AuthService();
     const config = getConfig();
-    this.challengeJwtSecret = config.jwtSecret + '-webauthn-challenge';
+    this.challengeJwtSecret = `${config.jwtSecret}-webauthn-challenge`;
+  }
+
+  private handleError(res: Response, error: unknown, defaultMessage: string): void {
+    console.error('AuthController Error:', error);
+    
+    const message = error instanceof Error ? error.message : defaultMessage;
+    const statusCode = message.includes('Invalid credentials') || 
+                      message.includes('Not an admin') || 
+                      message.includes('Authentication required') ? 401 : 400;
+    
+    res.status(statusCode).json({
+      success: false,
+      message
+    });
+  }
+
+  private requireUser(req: RequestWithUser, res: Response): boolean {
+    if (!req.user) {
+      res.status(401).json({
+        success: false,
+        message: 'Authentication required'
+      });
+      return false;
+    }
+    return true;
   }
 
   public async register(req: RequestWithUser, res: Response): Promise<void> {
     try {
       const result = await this.authService.register(req.body);
       res.status(201).json(result);
-    } catch (error: any) {
-      res.status(400).json({ message: error.message });
+    } catch (error) {
+      this.handleError(res, error, 'Registration failed');
     }
   }
 
   public async sendRegistrationOtp(req: RequestWithUser, res: Response): Promise<void> {
     try {
-      const otp = await this.authService.sendRegistrationOtp(req.body);
-      res.status(200).json({ message: 'OTP sent to your email.', otp });
-    } catch (error: any) {
-      res.status(400).json({ message: error.message });
+      const result = await this.authService.sendRegistrationOtp(req.body);
+      res.status(200).json(result);
+    } catch (error) {
+      this.handleError(res, error, 'Failed to send registration OTP');
     }
   }
 
   public async verifyRegistrationOtp(req: RequestWithUser, res: Response): Promise<void> {
     try {
       const result = await this.authService.verifyRegistrationOtp(req.body);
-      res.status(201).json(result);
-    } catch (error: any) {
-      res.status(400).json({ message: error.message });
+      res.status(200).json(result);
+    } catch (error) {
+      this.handleError(res, error, 'OTP verification failed');
     }
   }
 
-  public async login(req: RequestWithUser, res: Response): Promise<any> {
+  public async login(req: RequestWithUser, res: Response): Promise<void> {
     try {
       const result = await this.authService.login(req.body);
       res.status(200).json(result);
-    } catch (error: any) {
-      res.status(400).json({ message: error.message });
+    } catch (error) {
+      this.handleError(res, error, 'Login failed');
     }
   }
 
   public async sendLoginOtp(req: RequestWithUser, res: Response): Promise<void> {
     try {
-      const otp = await this.authService.sendLoginOtp(req.body);
-      res.status(200).json({ message: 'OTP sent to your email.', otp });
-    } catch (error: any) {
-      res.status(400).json({ message: error.message });
+      const result = await this.authService.sendLoginOtp(req.body);
+      res.status(200).json(result);
+    } catch (error) {
+      this.handleError(res, error, 'Failed to send login OTP');
     }
   }
 
@@ -100,8 +125,8 @@ class AuthController {
     try {
       const result = await this.authService.verifyLoginOtp(req.body);
       res.status(200).json(result);
-    } catch (error: any) {
-      res.status(400).json({ message: error.message });
+    } catch (error) {
+      this.handleError(res, error, 'OTP verification failed');
     }
   }
 
@@ -109,13 +134,18 @@ class AuthController {
     try {
       const { microsoftSsoService } = getServiceInstances();
       const authUrl = await microsoftSsoService.getAuthUrl(req);
-      if (authUrl) {
-        res.redirect(authUrl);
-      } else {
-        res.status(500).send("Error generating Microsoft auth URL.");
+      
+      if (!authUrl) {
+        throw new Error('Failed to generate Microsoft auth URL');
       }
-    } catch (error: any) {
-      res.status(500).send(error.message);
+      
+      res.redirect(authUrl);
+    } catch (error) {
+      console.error('Microsoft SSO Error:', error);
+      res.status(500).json({
+        success: false,
+        message: error instanceof Error ? error.message : 'Microsoft SSO failed'
+      });
     }
   }
 
@@ -123,125 +153,186 @@ class AuthController {
     try {
       const { authCode } = await this.authService.handleMicrosoftSsoCallback(req);
       const config = getConfig();
-      res.redirect(config.frontendUrl + '/auth/microsoft/callback?code=' + authCode);
-    } catch (error: any) {
-      res.status(500).send(error.message);
+      
+      const redirectUrl = `${config.frontendUrl}/auth/microsoft/callback?code=${authCode}`;
+      res.redirect(redirectUrl);
+    } catch (error) {
+      console.error('Microsoft SSO Callback Error:', error);
+      res.status(500).json({
+        success: false,
+        message: error instanceof Error ? error.message : 'Microsoft SSO callback failed'
+      });
     }
   }
 
-  public async exchangeCodeForToken(req: RequestWithUser, res: Response): Promise<any> {
+  public async exchangeCodeForToken(req: RequestWithUser, res: Response): Promise<void> {
     try {
       const { code } = req.body;
+      
       if (!code) {
-        return res.status(400).json({ message: "Authorization code is required." });
-      }
-      const data = await this.authService.exchangeCodeForToken(code);
-      return res.status(200).json(data);
-    } catch (error: any) {
-      return res.status(400).json({ message: error.message });
-    }
-  }
-
-  public async adminLogin(req: RequestWithUser, res: Response): Promise<any> {
-    try {
-      const result = await this.authService.adminLogin(req.body);
-      return res.status(200).json(result);
-    } catch (error: any) {
-      return res.status(401).json({ message: error.message });
-    }
-  }
-
-  async generateWebAuthnRegistrationOptions(req: RequestWithUser, res: Response) {
-    try {
-      const user = req.user; // from auth middleware
-      if (!user) {
-        res.status(401).json({ message: 'Authentication required' });
+        res.status(400).json({
+          success: false,
+          message: 'Authorization code is required'
+        });
         return;
       }
+      
+      const data = await this.authService.exchangeCodeForToken(code);
+      res.status(200).json({
+        success: true,
+        message: 'Token exchanged successfully',
+        data
+      });
+    } catch (error) {
+      this.handleError(res, error, 'Token exchange failed');
+    }
+  }
+
+  public async adminLogin(req: RequestWithUser, res: Response): Promise<void> {
+    try {
+      const result = await this.authService.adminLogin(req.body);
+      res.status(200).json(result);
+    } catch (error) {
+      this.handleError(res, error, 'Admin login failed');
+    }
+  }
+
+  public async generateWebAuthnRegistrationOptions(req: RequestWithUser, res: Response): Promise<void> {
+    try {
+      if (!this.requireUser(req, res)) return;
+
       const { webAuthnService } = getServiceInstances();
-      const options = await webAuthnService.getRegistrationOptions(user);
+      const options = await webAuthnService.getRegistrationOptions(req.user!);
       
       const challengeToken = jwt.sign(
-        { challenge: options.challenge },
+        { challenge: options.challenge } as WebAuthnChallenge,
         this.challengeJwtSecret,
         { expiresIn: CHALLENGE_JWT_EXPIRES_IN }
       );
 
-      res.json({ ...options, challengeToken });
-    } catch (error: any) {
-      res.status(400).json({ message: error.message });
+      res.status(200).json({
+        success: true,
+        message: 'WebAuthn registration options generated',
+        data: { ...options, challengeToken }
+      });
+    } catch (error) {
+      this.handleError(res, error, 'Failed to generate WebAuthn registration options');
     }
   }
 
-  async verifyWebAuthnRegistration(req: RequestWithUser, res: Response) {
+  public async verifyWebAuthnRegistration(req: RequestWithUser, res: Response): Promise<void> {
     try {
-      const user = req.user;
-      if (!user) {
-        res.status(401).json({ message: 'Authentication required' });
-        return;
-      }
+      if (!this.requireUser(req, res)) return;
+
       const { challengeToken, ...registrationData } = req.body;
 
       if (!challengeToken) {
-        res.status(400).json({ message: 'Challenge token is missing.' });
-        return 
+        res.status(400).json({
+          success: false,
+          message: 'Challenge token is missing'
+        });
+        return;
       }
 
-      const { challenge } = jwt.verify(challengeToken, this.challengeJwtSecret) as { challenge: string };
+      const { challenge } = jwt.verify(challengeToken, this.challengeJwtSecret) as WebAuthnChallenge;
 
       const { webAuthnService } = getServiceInstances();
-      const result = await webAuthnService.verifyRegistration(user, registrationData, challenge);
-      res.json({ success: result });
-    } catch (error: any) {
+      const result = await webAuthnService.verifyRegistration(req.user!, registrationData, challenge);
+      
+      res.status(200).json({
+        success: true,
+        message: 'WebAuthn registration verified',
+        data: { verified: result }
+      });
+    } catch (error) {
       if (error instanceof jwt.JsonWebTokenError) {
-        res.status(400).json({ message: `Invalid challenge token: ${error.message}` });
-        return 
+        res.status(400).json({
+          success: false,
+          message: `Invalid challenge token: ${error.message}`
+        });
+        return;
       }
-      res.status(400).json({ message: error.message });
+      this.handleError(res, error, 'WebAuthn registration verification failed');
     }
   }
 
-  async generateWebAuthnLoginOptions(req: RequestWithUser, res: Response) {
+  public async generateWebAuthnLoginOptions(req: RequestWithUser, res: Response): Promise<void> {
     try {
       const { email } = req.body;
+      
+      if (!email) {
+        res.status(400).json({
+          success: false,
+          message: 'Email is required'
+        });
+        return;
+      }
+
       const { webAuthnService } = getServiceInstances();
       const options = await webAuthnService.getLoginOptions(email);
 
       const challengeToken = jwt.sign(
-        { challenge: options.challenge },
+        { challenge: options.challenge } as WebAuthnChallenge,
         this.challengeJwtSecret,
         { expiresIn: CHALLENGE_JWT_EXPIRES_IN }
       );
 
-      res.json({ ...options, challengeToken });
-    } catch (error: any) {
-      res.status(400).json({ message: error.message });
+      res.status(200).json({
+        success: true,
+        message: 'WebAuthn login options generated',
+        data: { ...options, challengeToken }
+      });
+    } catch (error) {
+      this.handleError(res, error, 'Failed to generate WebAuthn login options');
     }
   }
 
-  async verifyWebAuthnLogin(req: RequestWithUser, res: Response) {
+  public async verifyWebAuthnLogin(req: RequestWithUser, res: Response): Promise<void> {
     try {
       const { email, data, challengeToken } = req.body;
+      
       if (!challengeToken) {
-        res.status(400).json({ message: 'Challenge token is missing.' });
-        return 
+        res.status(400).json({
+          success: false,
+          message: 'Challenge token is missing'
+        });
+        return;
       }
 
-      const { challenge } = jwt.verify(challengeToken, this.challengeJwtSecret) as { challenge: string };
+      if (!email || !data) {
+        res.status(400).json({
+          success: false,
+          message: 'Email and authentication data are required'
+        });
+        return;
+      }
+
+      const { challenge } = jwt.verify(challengeToken, this.challengeJwtSecret) as WebAuthnChallenge;
 
       const { webAuthnService } = getServiceInstances();
       const result = await webAuthnService.verifyLogin(data, challenge, email);
+      
       if (result.success) {
-        res.json(result);
+        res.status(200).json({
+          success: true,
+          message: 'WebAuthn login verified',
+          data: result
+        });
       } else {
-        res.status(400).json({ message: 'Verification failed' });
+        res.status(400).json({
+          success: false,
+          message: 'WebAuthn verification failed'
+        });
       }
-    } catch (error: any) {
+    } catch (error) {
       if (error instanceof jwt.JsonWebTokenError) {
-        res.status(400).json({ message: `Invalid challenge token: ${error.message}` });
-        return 
+        res.status(400).json({
+          success: false,
+          message: `Invalid challenge token: ${error.message}`
+        });
+        return;
       }
-      res.status(400).json({ message: error.message });
+      this.handleError(res, error, 'WebAuthn login verification failed');
     }
   }
 }
