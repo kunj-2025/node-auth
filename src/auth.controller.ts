@@ -154,6 +154,10 @@ class AuthController {
   async generateWebAuthnRegistrationOptions(req: RequestWithUser, res: Response) {
     try {
       const user = req.user; // from auth middleware
+      if (!user) {
+        res.status(401).json({ message: 'Authentication required' });
+        return;
+      }
       const { webAuthnService } = getServiceInstances();
       const options = await webAuthnService.getRegistrationOptions(user);
       
@@ -172,6 +176,10 @@ class AuthController {
   async verifyWebAuthnRegistration(req: RequestWithUser, res: Response) {
     try {
       const user = req.user;
+      if (!user) {
+        res.status(401).json({ message: 'Authentication required' });
+        return;
+      }
       const { challengeToken, ...registrationData } = req.body;
 
       if (!challengeToken) {
