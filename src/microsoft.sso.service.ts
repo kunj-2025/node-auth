@@ -29,7 +29,7 @@ export class MicrosoftSsoService {
         this.cryptoProvider = new CryptoProvider();
     }
 
-    async getAuthUrl(session: any): Promise<string | null> {
+    async getAuthUrl(req: Request): Promise<string | null> {
         try {
             const { verifier, challenge } = await this.cryptoProvider.generatePkceCodes();
             const authCodeUrlParameters: AuthorizationUrlRequest = {
@@ -38,7 +38,9 @@ export class MicrosoftSsoService {
                 codeChallenge: challenge,
                 codeChallengeMethod: "S256"
             };
-            session.pkceCodes = { verifier, challenge };
+            req.session.pkceCodes = { verifier, challenge };
+
+            console.log("assigend req session",req.session)
             const authUrl = await this.cca.getAuthCodeUrl(authCodeUrlParameters);
             return authUrl;
         } catch (error) {
@@ -47,7 +49,7 @@ export class MicrosoftSsoService {
     }
 
     async acquireTokenByCode(req: Request): Promise<any> {
-        console.log("req session", req.session)
+        console.log("req session in acquire token by code", req.session)
         const tokenRequest: AuthorizationCodeRequest = {
             code: req.query.code as string,
             scopes: SSO_SCOPES,
